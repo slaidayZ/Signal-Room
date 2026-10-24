@@ -18,7 +18,8 @@
         <button class="mode-option" type="button" data-mode="all"><span class="mode-tag">ПОЛНЫЙ СЦЕНАРИЙ</span><strong>Все атаки</strong><span>Все 6 типов сигналов присутствуют в журнале каждый раз.</span></button>
         <button class="mode-option" type="button" data-mode="random"><span class="mode-tag">ПЕРЕМЕННЫЙ СЦЕНАРИЙ</span><strong>Случайный набор</strong><span>При каждом запуске выбираются случайные 3–6 типов атак.</span></button>
       </div>
-      <p class="mode-footnote">Все атаки вымышленные и существуют только внутри локального симулятора.</p>
+      <p class="mode-footnote">Все атаки вымышленные и существуют только внутри локального симулятора. Выбор нового режима сбросит текущее прохождение.</p>
+      <button id="continue-session" class="continue-session" type="button" hidden>← Вернуться к текущей игре</button>
     </div>
   </div>
   <div class="shell">
@@ -31,14 +32,14 @@
         <button class="nav-item" data-screen="database"><span class="nav-ico">▤</span> База данных</button>
         <button class="nav-item" data-screen="logs"><span class="nav-ico">⌁</span> Журналы событий</button>
         <button class="nav-item" data-screen="services"><span class="nav-ico">▣</span> Сервисы</button>
-        <button class="nav-item" data-screen="inbox"><span class="nav-ico">✉</span> Почта <span class="nav-number">3</span></button>
+        <button class="nav-item" data-screen="inbox"><span class="nav-ico">✉</span> Почта <span class="nav-number" id="inbox-count">4</span></button>
         <button class="nav-item" data-screen="report"><span class="nav-ico">◷</span> Отчёт</button>
       </nav>
       <div class="sidebar-bottom">
         <div class="label-mini">ОБЪЕКТ УЧЕНИЙ</div>
         <div class="org-name">ASTER / OPERATIONS</div>
         <p>Вымышленная IT-инфраструктура. Все команды безопасны и выполняются только внутри игры.</p>
-        <button id="reset" class="reset-btn">↺ Новая симуляция / режим</button>
+        <button id="reset" class="reset-btn" type="button">↺ Новая симуляция / режим</button>
       </div>
     </aside>
 

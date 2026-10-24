@@ -5,6 +5,7 @@ Requires Python 3.9+ standard library only.
 """
 from __future__ import annotations
 
+import atexit
 import json
 import random
 import re
@@ -22,14 +23,28 @@ HOST, PORT = '127.0.0.1', 3080
 class Simulation:
     def __init__(self):
         self.lock = threading.RLock()
+        self.db = None
         self.reset()
+        # The initial game is prepared, but its scenario has not been chosen yet.
+        self.started = False
+
+    def close(self):
+        """Release the in-memory SQLite database (also useful for tests)."""
+        with self.lock:
+            if self.db is not None:
+                self.db.close()
+                self.db = None
 
     def reset(self, mode='all'):
         with getattr(self, 'lock', threading.RLock()):
             self.mode = mode if mode in ('all','random') else 'all'
+            self.started = True
             if getattr(self, 'db', None):
                 self.db.close()
             self.db = sqlite3.connect(':memory:', check_same_thread=False)
+            if hasattr(self.db, 'setlimit'):
+                # Guard the local SQL explorer against accidental huge allocations.
+                self.db.setlimit(sqlite3.SQLITE_LIMIT_LENGTH, 256_000)
             self.db.row_factory = sqlite3.Row
             self.db.executescript('''
             CREATE TABLE accounts (username TEXT PRIMARY KEY, team TEXT, role TEXT, status TEXT, credential_version INTEGER);
@@ -74,6 +89,7 @@ class Simulation:
             ]
             chosen_security = security_catalog if self.mode == 'all' else random.sample(security_catalog, random.randint(3, len(security_catalog)))
             self.active_security_ids = {row[0] for row in chosen_security}
+            self.security_to_contain = {row[0] for row in chosen_security if row[-1] == 'open'}
             self.db.executemany('INSERT INTO security_events VALUES(?,?,?,?,?,?,?,?,?)', chosen_security)
             self.db.execute("INSERT INTO service_configs VALUES('auth-api','v2','New release; login intermittently fails')")
             self.db.execute("INSERT INTO service_configs VALUES('report-api','v1','Stable')")
@@ -82,10 +98,12 @@ class Simulation:
             self.pins = set()
             self.notes = []
             self.history = []
+            self.console = []
             self.warnings = []
             self.last_health = False
             self.auth_running_version = 'v2'
             self.closed = False
+            self.final_score = None
             self.penalty = 0
             self.hints = 0
             self.export_alerts = set()
@@ -115,29 +133,35 @@ class Simulation:
         return conf == 'v1' and self.auth_running_version == 'v1' and self.last_health
 
     def security_contained(self):
-        active=[r['event_id'] for r in self.rows("SELECT event_id FROM security_events WHERE status='open'")]
-        return all(self.rows('SELECT status FROM security_events WHERE event_id=?',(eid,))[0]['status']=='contained' for eid in active)
+        # Track the originally open signals, not the remaining open signals.
+        # Otherwise the objective label would change as the player progresses.
+        return all(self.rows('SELECT status FROM security_events WHERE event_id=?',(eid,))[0]['status']=='contained'
+                   for eid in self.security_to_contain)
 
     def goals(self):
-        open_security_count=len(self.rows("SELECT event_id FROM security_events WHERE status='open'"))
         return [
             {'id':'investigate', 'label':'Зафиксировать ключевые улики входа и выгрузки', 'done': 'AUTH-204' in self.pins and bool(self.pins.intersection({'AUD-901','AUD-902','AUD-903','AUD-904'})), 'hint':'Сопоставь необычный вход с выгрузкой и закрепи оба события.'},
             {'id':'investigate_security', 'label':f"Зафиксировать все {len(self.active_security_ids)} сигнала(ов) security", 'done': self.active_security_ids.issubset(self.pins), 'hint':'Открой logs security и закрепи ID всех событий этого прохождения.'},
             {'id':'contain', 'label':'Остановить подозрительную сессию', 'done': self.is_revoked(), 'hint':'Проверь сессии одного аккаунта и отзови только подозрительную.'},
-            {'id':'contain_security', 'label':f'Локализовать {open_security_count} активных security-сигнал(ов)', 'done': self.security_contained(), 'hint':'Открой logs security, найди записи со status=open и используй security contain <SEC-ID>.'},
+            {'id':'contain_security', 'label':f'Локализовать {len(self.security_to_contain)} активных security-сигнал(ов)', 'done': self.security_contained(), 'hint':'Открой logs security, найди записи со status=open и используй security contain <SEC-ID>.'},
             {'id':'secure', 'label':'Сменить скомпрометированные реквизиты', 'done': self.rotated(), 'hint':'После отзыва сессии обнови учётные данные затронутого аккаунта.'},
             {'id':'recover', 'label':'Вернуть сервис и проверить его', 'done': self.recovered(), 'hint':'Проверь версию auth-api, откати неисправную конфигурацию, перезапусти и проверь health.'},
             {'id':'close', 'label':'Закрыть отчёт об инциденте', 'done': self.closed, 'hint':'Когда выполнены остальные задачи, выполни case close.'}
         ]
 
     def score(self):
-        return max(0, 100 - self.penalty - self.hints * 4 - max(0, self.minutes-6)*3)
+        if self.final_score is not None:
+            return self.final_score
+        # Completing the mandatory actions normally takes ~13 simulated minutes.
+        # Do not penalize the player just for executing the required steps.
+        return max(0, 100 - self.penalty - self.hints * 4 - max(0, self.minutes-15)*2)
 
     def overview(self):
         with self.lock:
             return {
                 'now': self.now(), 'minutes': self.minutes, 'score': self.score(),
                 'mode':self.mode, 'mode_label':'Все атаки' if self.mode=='all' else 'Случайный набор',
+                'started':self.started, 'console':self.console[-45:],
                 'attack_count':len(self.active_security_ids),
                 'incident':'SR-042', 'closed':self.closed,
                 'goals':self.goals(), 'pins':sorted(self.pins), 'notes':self.notes[-20:], 'history':self.history[-35:],
@@ -187,10 +211,10 @@ class Simulation:
                 self.warnings.append('Задержка локализации привела к дополнительной утечке.')
                 self.log('danger','Дополнительная выгрузка: AUD-904.')
         pressure = {
-            'SEC-301': (2, 5, 'Подозрительный сетевой сигнал SEC-301 оставался без сдерживания.'),
-            'SEC-304': (3, 5, 'MAC flooding SEC-304 продолжил создавать помехи виртуальной сети.'),
-            'SEC-305': (4, 4, 'Аномалия Wi-Fi SEC-305 осталась активной.'),
-            'SEC-306': (4, 4, 'Неожиданные MFA-запросы SEC-306 не были обработаны вовремя.'),
+            'SEC-301': (5, 5, 'Подозрительный сетевой сигнал SEC-301 оставался без сдерживания.'),
+            'SEC-304': (6, 5, 'MAC flooding SEC-304 продолжил создавать помехи виртуальной сети.'),
+            'SEC-305': (7, 4, 'Аномалия Wi-Fi SEC-305 осталась активной.'),
+            'SEC-306': (8, 4, 'Неожиданные MFA-запросы SEC-306 не были обработаны вовремя.'),
         }
         for eid, (threshold, penalty, warning) in pressure.items():
             record = self.rows('SELECT status FROM security_events WHERE event_id=?',(eid,))
@@ -234,12 +258,22 @@ class Simulation:
 
     def command(self, raw):
         with self.lock:
-            return self._command(raw.strip())
+            raw = raw.strip()
+            result = self._command(raw)
+            if result['kind'] == 'clear':
+                self.console.clear()
+            elif raw:
+                self.console.append({'command':raw, 'result':result})
+                if len(self.console) > 45:
+                    self.console = self.console[-45:]
+            return result
 
     def _command(self, raw):
         if not raw: return self.result('Введите команду или help.')
         if len(raw)>1200: return self.result('Слишком длинная команда.', 'error')
         self.history.append({'time':self.now(),'cmd':raw})
+        if len(self.history) > 300:
+            self.history = self.history[-300:]
         low = raw.lower().strip().rstrip(';')
         if self.closed and (low.startswith(('sessions revoke ', 'security contain ', 'accounts rotate ', 'services rollback ', 'services restart ', 'services test '))):
             return self.result('Дело уже закрыто. Для нового прохождения нажми «Новая симуляция».', 'warning')
@@ -301,8 +335,10 @@ clear                        очистить терминал''')
 Используйте журналы, запросы к БД и инструменты восстановления.''')
         if low=='hint':
             outstanding=next((g for g in self.goals() if not g['done']),None)
+            if outstanding is None:
+                return self.result('Все задачи выполнены.','success')
             self.hints += 1
-            return self.result((outstanding['hint'] if outstanding else 'Все задачи выполнены.') + '  [–4 к игровому результату]','warning')
+            return self.result(outstanding['hint'] + '  [–4 к игровому результату]','warning')
         if low in ('logs auth','logs audit','logs security','logs app'):
             if low=='logs auth':
                 data=self.rows('SELECT * FROM auth_events ORDER BY time')
@@ -340,7 +376,13 @@ clear                        очистить терминал''')
                 cur=self.db.execute(query)
                 cols=[d[0] for d in cur.description] if cur.description else []
                 fetched=cur.fetchmany(51)
-                rows=[dict(zip(cols,row)) for row in fetched[:50]]
+                def display_cell(value):
+                    if isinstance(value, bytes):
+                        # SQLite BLOB values are not JSON serializable.
+                        preview=value[:64].hex().upper()
+                        return '0x'+preview+('…' if len(value)>64 else '')
+                    return value
+                rows=[{col:display_cell(value) for col,value in zip(cols,row)} for row in fetched[:50]]
                 return self.result(f'SQLite: {min(50,len(fetched))} строк'+(' (показаны первые 50)' if len(fetched)>50 else '')+'.',table=rows)
             except (sqlite3.Error,ValueError) as e:
                 return self.result('Ошибка SQL: '+str(e),'error')
@@ -351,13 +393,14 @@ clear                        очистить терминал''')
             return self.result('Сессии. Не все сессии одного пользователя подозрительные.',table=self.rows('SELECT * FROM sessions ORDER BY started_at'))
         if low.startswith('security contain '):
             eid=raw.split()[-1].upper()
-            allowed={r['event_id'] for r in self.rows("SELECT event_id FROM security_events WHERE status='open'")}
-            if eid not in allowed:
-                self.penalty+=4
-                return self.result('Этот сигнал не требует containment или ID неверен. Сначала проверь logs security; неверное действие: –4 к результату.','error')
-            rec=self.rows('SELECT status,technique FROM security_events WHERE event_id=?',(eid,))[0]
+            matches=self.rows('SELECT status,technique FROM security_events WHERE event_id=?',(eid,))
+            if not matches:
+                return self.result('Такого security-события нет. Проверь logs security.','error')
+            rec=matches[0]
             if rec['status']=='contained':
                 return self.result(eid+' уже локализован.','warning')
+            if rec['status'] in ('blocked','quarantined'):
+                return self.result(eid+': система уже отклонила или изолировала этот сигнал. Дополнительное containment не требуется.','warning')
             self.db.execute("UPDATE security_events SET status='contained' WHERE event_id=?",(eid,))
             self.tick()
             self.log('success',f"Сигнал {eid} ({rec['technique']}) локализован в виртуальной инфраструктуре.")
@@ -458,12 +501,14 @@ clear                        очистить терминал''')
             if todo:
                 return self.result('Пока нельзя закрыть дело. Не выполнено:\n• '+'\n• '.join(todo),'warning')
             self.tick()
+            self.final_score = self.score()
             self.closed=True
             self.log('success','Инцидент SR-042 закрыт. Итоговый отчёт готов.')
             return self.result('ИНЦИДЕНТ ЗАКРЫТ. Все обязательные задачи выполнены. Итоговая оценка: '+str(self.score())+'/100. Откройте вкладку «Отчёт».','success')
         return self.result('Неизвестная команда. Введите help — там есть синтаксис и примеры.','error')
 
 SIM = Simulation()
+atexit.register(SIM.close)
 
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *_): pass
@@ -472,6 +517,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header('Content-Type','application/json; charset=utf-8')
         self.send_header('Cache-Control','no-store')
+        self.send_header('X-Content-Type-Options','nosniff')
         self.send_header('Content-Length',str(len(out)))
         self.end_headers()
         self.wfile.write(out)
@@ -487,15 +533,28 @@ class Handler(BaseHTTPRequestHandler):
         b=target.read_bytes()
         self.send_response(200)
         self.send_header('Content-Type',mime+'; charset=utf-8')
+        self.send_header('Cache-Control','no-store')
+        self.send_header('X-Content-Type-Options','nosniff')
         self.send_header('Content-Length',str(len(b)))
         self.end_headers()
         self.wfile.write(b)
     def do_POST(self):
         path=urlparse(self.path).path
-        n=int(self.headers.get('Content-Length','0'))
+        # A malicious website must not be able to send cross-origin commands to
+        # a game running on localhost (browser-originated requests include Origin).
+        origin=self.headers.get('Origin')
+        allowed_origins={f'http://{HOST}:{self.server.server_port}', f'http://localhost:{self.server.server_port}'}
+        if origin and origin not in allowed_origins:
+            return self._json({'error':'Запрос из другого источника запрещён'},403)
+        if self.headers.get('Content-Type','').split(';')[0].strip().lower() != 'application/json':
+            return self._json({'error':'Ожидается application/json'},415)
+        try: n=int(self.headers.get('Content-Length','0'))
+        except ValueError: return self._json({'error':'Некорректный размер запроса'},400)
         if n<0 or n>10000: return self._json({'error':'Превышен лимит размера запроса'},413)
-        try: data=json.loads(self.rfile.read(n).decode()) if n else {}
-        except Exception: return self._json({'error':'Некорректный JSON'},400)
+        try: data=json.loads(self.rfile.read(n).decode('utf-8')) if n else {}
+        except (ValueError,UnicodeError): return self._json({'error':'Некорректный JSON'},400)
+        if not isinstance(data,dict):
+            return self._json({'error':'Ожидается JSON-объект'},400)
         if path=='/api/reset':
             SIM.reset(data.get('mode','all'))
             return self._json({'state':SIM.overview()})
