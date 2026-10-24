@@ -6,6 +6,7 @@ Requires Python 3.9+ standard library only.
 from __future__ import annotations
 
 import json
+import random
 import re
 import shlex
 import sqlite3
@@ -23,8 +24,9 @@ class Simulation:
         self.lock = threading.RLock()
         self.reset()
 
-    def reset(self):
+    def reset(self, mode='all'):
         with getattr(self, 'lock', threading.RLock()):
+            self.mode = mode if mode in ('all','random') else 'all'
             if getattr(self, 'db', None):
                 self.db.close()
             self.db = sqlite3.connect(':memory:', check_same_thread=False)
@@ -34,7 +36,7 @@ class Simulation:
             CREATE TABLE sessions (id TEXT PRIMARY KEY, username TEXT, source_ip TEXT, device TEXT, started_at TEXT, mfa TEXT, status TEXT);
             CREATE TABLE auth_events (event_id TEXT PRIMARY KEY, time TEXT, username TEXT, source_ip TEXT, outcome TEXT, session_id TEXT, detail TEXT);
             CREATE TABLE data_events (event_id TEXT PRIMARY KEY, time TEXT, username TEXT, session_id TEXT, action TEXT, object TEXT, size_mb INTEGER);
-            CREATE TABLE security_events (event_id TEXT PRIMARY KEY, time TEXT, technique TEXT, source TEXT, target TEXT, indicator TEXT, assessment TEXT, response TEXT);
+            CREATE TABLE security_events (event_id TEXT PRIMARY KEY, time TEXT, technique TEXT, source TEXT, target TEXT, indicator TEXT, assessment TEXT, response TEXT, status TEXT);
             CREATE TABLE service_configs (service TEXT PRIMARY KEY, version TEXT, description TEXT);
             ''')
             self.db.executemany('INSERT INTO accounts VALUES(?,?,?,?,?)', [
@@ -62,14 +64,17 @@ class Simulation:
                 ('AUD-902','10:22','svc-reports','S-771','EXPORT','org-directory.csv',67),
             ])
             # Fictional, detection-focused telemetry. No attack commands or payloads are implemented.
-            self.db.executemany('INSERT INTO security_events VALUES(?,?,?,?,?,?,?,?)', [
-                ('SEC-301','10:14','IP spoofing','198.51.100.24','edge-gateway-01','Source address conflicts with upstream session metadata','Подозрение: источник мог подменять сетевой адрес. Одного IP недостаточно для атрибуции.','Сопоставить gateway, identity и endpoint-журналы; включить проверку источника на границе.'),
-                ('SEC-302','10:15','Повышение привилегий','svc-reports','role: finance-admin','Необычная попытка смены роли; операция отклонена политикой','Попытка повышения привилегий заблокирована; подтверждённого изменения роли нет.','Проверить IAM-аудит и права сервисного аккаунта; сохранить минимально необходимые роли.'),
-                ('SEC-303','10:16','Фишинг через почтовый шлюз','mail-gateway-02','a.ivanova','Письмо с поддельным именем отправителя помещено в карантин','Шлюз обнаружил подозрительное письмо до доставки пользователю.','Проверить карантин и правила шлюза; не открывать вложения, подтвердить отправителя по независимому каналу.'),
-                ('SEC-304','10:18','MAC flooding','access-switch-03','VLAN-22','В коротком окне замечено аномальное число новых MAC-адресов','Виртуальный коммутатор зарегистрировал признаки переполнения таблицы адресов.','Проверить port-security и телеметрию коммутатора; ограничить затронутый порт по процедуре учения.'),
-                ('SEC-305','10:20','Аномалия handshake','wireless-controller-01','AP-07','Повторяющиеся события аутентификации от неизвестного клиента','Есть признаки подозрительной активности вокруг Wi-Fi-аутентификации; секреты и рукопожатия не раскрываются.','Сверить журналы контроллера и точки доступа; проверить клиентские учётные данные и настройки Wi-Fi.'),
-                ('SEC-306','10:21','MFA fatigue','identity-provider','m.sadyk','Серия неожиданных MFA-запросов отклонена пользователем','Пользователь сообщил о запросах, которые сам не инициировал.','Отклонить запросы, проверить активные сессии и уведомить SOC; подтвердить пользователя по доверенному каналу.'),
-            ])
+            security_catalog = [
+                ('SEC-301','10:14','IP spoofing','198.51.100.24','edge-gateway-01','Source address conflicts with upstream session metadata','Подозрение: источник мог подменять сетевой адрес. Одного IP недостаточно для атрибуции.','Сопоставить gateway, identity и endpoint-журналы; включить проверку источника на границе.','open'),
+                ('SEC-302','10:15','Повышение привилегий','svc-reports','role: finance-admin','Необычная попытка смены роли; операция отклонена политикой','Попытка повышения привилегий заблокирована; подтверждённого изменения роли нет.','Проверить IAM-аудит и права сервисного аккаунта; сохранить минимально необходимые роли.','blocked'),
+                ('SEC-303','10:16','Фишинг через почтовый шлюз','mail-gateway-02','a.ivanova','Письмо с поддельным именем отправителя помещено в карантин','Шлюз обнаружил подозрительное письмо до доставки пользователю.','Проверить карантин и правила шлюза; не открывать вложения, подтвердить отправителя по независимому каналу.','quarantined'),
+                ('SEC-304','10:18','MAC flooding','access-switch-03','VLAN-22','В коротком окне замечено аномальное число новых MAC-адресов','Виртуальный коммутатор зарегистрировал признаки переполнения таблицы адресов.','Проверить port-security и телеметрию коммутатора; ограничить затронутый порт по процедуре учения.','open'),
+                ('SEC-305','10:20','Аномалия handshake','wireless-controller-01','AP-07','Повторяющиеся события аутентификации от неизвестного клиента','Есть признаки подозрительной активности вокруг Wi-Fi-аутентификации; секреты и рукопожатия не раскрываются.','Сверить журналы контроллера и точки доступа; проверить клиентские учётные данные и настройки Wi-Fi.','open'),
+                ('SEC-306','10:21','MFA fatigue','identity-provider','m.sadyk','Серия неожиданных MFA-запросов отклонена пользователем','Пользователь сообщил о запросах, которые сам не инициировал.','Отклонить запросы, проверить активные сессии и уведомить SOC; подтвердить пользователя по доверенному каналу.','open'),
+            ]
+            chosen_security = security_catalog if self.mode == 'all' else random.sample(security_catalog, random.randint(3, len(security_catalog)))
+            self.active_security_ids = {row[0] for row in chosen_security}
+            self.db.executemany('INSERT INTO security_events VALUES(?,?,?,?,?,?,?,?,?)', chosen_security)
             self.db.execute("INSERT INTO service_configs VALUES('auth-api','v2','New release; login intermittently fails')")
             self.db.execute("INSERT INTO service_configs VALUES('report-api','v1','Stable')")
             self.db.commit()
@@ -84,9 +89,10 @@ class Simulation:
             self.penalty = 0
             self.hints = 0
             self.export_alerts = set()
+            self.security_alerts = set()
             self.inbox = [
                 {'time':'10:23','sender':'NOC / диспетчер','subject':'Нестабильность авторизации','body':'С 10:21 пользователи жалуются на ошибки входа. В мониторинге выросло число ответов 5xx. Нужно выяснить, связаны ли симптомы.'},
-                {'time':'10:22','sender':'SOC / сетевой мониторинг','subject':'Дополнительные сигналы угроз','body':'В security.log появились учебные детекты: возможная подмена IP, заблокированная попытка повышения привилегий, фишинг в карантине почтового шлюза, аномалия числа MAC-адресов на порту, события Wi-Fi handshake и неожиданные MFA-запросы. Проверь индикаторы и рекомендации в журнале.'},
+                {'time':'10:22','sender':'SOC / сетевой мониторинг','subject':'Дополнительные сигналы угроз','body':'В security.log появились учебные детекты: '+', '.join(row[2] for row in chosen_security)+'. Проверь индикаторы и рекомендации в журнале.'},
                 {'time':'10:22','sender':'SOC / автоматическая тревога','subject':'Подозрительная активность','body':'Зафиксированы нетипичные входы и выгрузки файлов. Первопричина пока неизвестна; проверьте журналы авторизации и аудита.'},
                 {'time':'10:19','sender':'Release bot','subject':'Deploy auth-api v2','body':'Новая конфигурация v2 развернута в 10:19. До релиза работала v1. Обновление не проходило полноценный канареечный тест.'},
             ]
@@ -108,22 +114,31 @@ class Simulation:
         conf = self.rows("SELECT version FROM service_configs WHERE service='auth-api'")[0]['version']
         return conf == 'v1' and self.auth_running_version == 'v1' and self.last_health
 
+    def security_contained(self):
+        active=[r['event_id'] for r in self.rows("SELECT event_id FROM security_events WHERE status='open'")]
+        return all(self.rows('SELECT status FROM security_events WHERE event_id=?',(eid,))[0]['status']=='contained' for eid in active)
+
     def goals(self):
+        open_security_count=len(self.rows("SELECT event_id FROM security_events WHERE status='open'"))
         return [
-            {'id':'investigate', 'label':'Зафиксировать две ключевые улики', 'done': 'AUTH-204' in self.pins and bool(self.pins.intersection({'AUD-901','AUD-902','AUD-903','AUD-904'})), 'hint':'Найди необычный вход и выгрузку в журналах; добавь их ID в материалы дела.'},
+            {'id':'investigate', 'label':'Зафиксировать ключевые улики входа и выгрузки', 'done': 'AUTH-204' in self.pins and bool(self.pins.intersection({'AUD-901','AUD-902','AUD-903','AUD-904'})), 'hint':'Сопоставь необычный вход с выгрузкой и закрепи оба события.'},
+            {'id':'investigate_security', 'label':f"Зафиксировать все {len(self.active_security_ids)} сигнала(ов) security", 'done': self.active_security_ids.issubset(self.pins), 'hint':'Открой logs security и закрепи ID всех событий этого прохождения.'},
             {'id':'contain', 'label':'Остановить подозрительную сессию', 'done': self.is_revoked(), 'hint':'Проверь сессии одного аккаунта и отзови только подозрительную.'},
+            {'id':'contain_security', 'label':f'Локализовать {open_security_count} активных security-сигнал(ов)', 'done': self.security_contained(), 'hint':'Открой logs security, найди записи со status=open и используй security contain <SEC-ID>.'},
             {'id':'secure', 'label':'Сменить скомпрометированные реквизиты', 'done': self.rotated(), 'hint':'После отзыва сессии обнови учётные данные затронутого аккаунта.'},
             {'id':'recover', 'label':'Вернуть сервис и проверить его', 'done': self.recovered(), 'hint':'Проверь версию auth-api, откати неисправную конфигурацию, перезапусти и проверь health.'},
             {'id':'close', 'label':'Закрыть отчёт об инциденте', 'done': self.closed, 'hint':'Когда выполнены остальные задачи, выполни case close.'}
         ]
 
     def score(self):
-        return max(0, 100 - self.penalty - self.hints * 4 - max(0, self.minutes-8)*2)
+        return max(0, 100 - self.penalty - self.hints * 4 - max(0, self.minutes-6)*3)
 
     def overview(self):
         with self.lock:
             return {
                 'now': self.now(), 'minutes': self.minutes, 'score': self.score(),
+                'mode':self.mode, 'mode_label':'Все атаки' if self.mode=='all' else 'Случайный набор',
+                'attack_count':len(self.active_security_ids),
                 'incident':'SR-042', 'closed':self.closed,
                 'goals':self.goals(), 'pins':sorted(self.pins), 'notes':self.notes[-20:], 'history':self.history[-35:],
                 'activity':self.activity[-18:], 'inbox':self.inbox,
@@ -139,7 +154,7 @@ class Simulation:
 
     def report(self):
         return {
-            'contained':self.is_revoked() and self.rotated(),
+            'contained':self.is_revoked() and self.rotated() and self.security_contained(),
             'recovered':self.recovered(),
             'evidence':len(self.pins), 'duration_minutes':self.minutes,
             'score':self.score(), 'closed':self.closed,
@@ -159,18 +174,33 @@ class Simulation:
     def tick(self, n=1):
         self.minutes += n
         if not self.is_revoked():
-            if self.minutes>=4 and 4 not in self.export_alerts:
-                self.export_alerts.add(4)
+            if self.minutes>=3 and 3 not in self.export_alerts:
+                self.export_alerts.add(3)
                 self.db.execute("INSERT INTO data_events VALUES(?,?,?,?,?,?,?)", ('AUD-903',self.now(),'svc-reports','S-771','EXPORT','contacts-partial.csv',18))
                 self.penalty += 7
                 self.warnings.append('Пока сессия S-771 была активна, произошла ещё одна выгрузка.')
                 self.log('danger','Новая выгрузка данных: AUD-903. Подозрительная сессия всё ещё активна.')
-            if self.minutes>=8 and 8 not in self.export_alerts:
-                self.export_alerts.add(8)
+            if self.minutes>=6 and 6 not in self.export_alerts:
+                self.export_alerts.add(6)
                 self.db.execute("INSERT INTO data_events VALUES(?,?,?,?,?,?,?)", ('AUD-904',self.now(),'svc-reports','S-771','EXPORT','contact-cache.csv',24))
                 self.penalty += 10
                 self.warnings.append('Задержка локализации привела к дополнительной утечке.')
                 self.log('danger','Дополнительная выгрузка: AUD-904.')
+        pressure = {
+            'SEC-301': (2, 5, 'Подозрительный сетевой сигнал SEC-301 оставался без сдерживания.'),
+            'SEC-304': (3, 5, 'MAC flooding SEC-304 продолжил создавать помехи виртуальной сети.'),
+            'SEC-305': (4, 4, 'Аномалия Wi-Fi SEC-305 осталась активной.'),
+            'SEC-306': (4, 4, 'Неожиданные MFA-запросы SEC-306 не были обработаны вовремя.'),
+        }
+        for eid, (threshold, penalty, warning) in pressure.items():
+            record = self.rows('SELECT status FROM security_events WHERE event_id=?',(eid,))
+            if not record: continue
+            status = record[0]['status']
+            if self.minutes >= threshold and status == 'open' and eid not in self.security_alerts:
+                self.security_alerts.add(eid)
+                self.penalty += penalty
+                self.warnings.append(warning)
+                self.log('danger', warning)
         self.db.commit()
 
     def virtual_file(self, path):
@@ -189,7 +219,7 @@ class Simulation:
         if path == '/var/log/audit.log':
             return '\n'.join(f"{r['time']} {r['event_id']} {r['action']} actor={r['username']} session={r['session_id']} object={r['object']} size={r['size_mb']}MB" for r in self.rows('SELECT * FROM data_events ORDER BY time'))
         if path == '/var/log/security.log':
-            return '\n'.join(f"{r['time']} {r['event_id']} {r['technique']} source={r['source']} target={r['target']} indicator={r['indicator']}" for r in self.rows('SELECT * FROM security_events ORDER BY time'))
+            return '\n'.join(f"{r['time']} {r['event_id']} {r['technique']} status={r['status']} source={r['source']} target={r['target']} indicator={r['indicator']}" for r in self.rows('SELECT * FROM security_events ORDER BY time'))
         if path == '/var/log/app.log':
             return ('10:19 RELEASE deployed auth-api config v2\n'
                     '10:21 ERROR auth-api token validation failure\n'
@@ -211,7 +241,7 @@ class Simulation:
         if len(raw)>1200: return self.result('Слишком длинная команда.', 'error')
         self.history.append({'time':self.now(),'cmd':raw})
         low = raw.lower().strip().rstrip(';')
-        if self.closed and (low.startswith(('sessions revoke ', 'accounts rotate ', 'services rollback ', 'services restart ', 'services test '))):
+        if self.closed and (low.startswith(('sessions revoke ', 'security contain ', 'accounts rotate ', 'services rollback ', 'services restart ', 'services test '))):
             return self.result('Дело уже закрыто. Для нового прохождения нажми «Новая симуляция».', 'warning')
         if low in ('help', '?'):
             return self.result('''ОСНОВНЫЕ КОМАНДЫ
@@ -223,6 +253,7 @@ status                       сводка инцидента
 logs auth | logs audit | logs security | logs app
 sessions list                активные сессии
 sessions revoke S-771       отозвать указанную сессию
+security contain <SEC-ID>   сдержать активный security-сигнал
 accounts list                учётные записи
 accounts rotate <username>   обновить реквизиты аккаунта
 services list                список сервисов
@@ -266,7 +297,7 @@ clear                        очистить терминал''')
 Авторизация: {'восстановлена' if self.recovered() else 'нестабильна'}
 Подозрительная сессия: {'отозвана' if self.is_revoked() else 'АКТИВНА'}
 Реквизиты svc-reports: {'обновлены' if self.rotated() else 'требуют проверки'}
-Улики в деле: {len(self.pins)}  •  Выполнено задач: {sum(g['done'] for g in self.goals())}/5
+Улики в деле: {len(self.pins)}  •  Выполнено задач: {sum(g['done'] for g in self.goals())}/{len(self.goals())}
 Используйте журналы, запросы к БД и инструменты восстановления.''')
         if low=='hint':
             outstanding=next((g for g in self.goals() if not g['done']),None)
@@ -318,6 +349,19 @@ clear                        очистить терминал''')
                 self.db.execute('PRAGMA query_only = 0')
         if low=='sessions list':
             return self.result('Сессии. Не все сессии одного пользователя подозрительные.',table=self.rows('SELECT * FROM sessions ORDER BY started_at'))
+        if low.startswith('security contain '):
+            eid=raw.split()[-1].upper()
+            allowed={r['event_id'] for r in self.rows("SELECT event_id FROM security_events WHERE status='open'")}
+            if eid not in allowed:
+                self.penalty+=4
+                return self.result('Этот сигнал не требует containment или ID неверен. Сначала проверь logs security; неверное действие: –4 к результату.','error')
+            rec=self.rows('SELECT status,technique FROM security_events WHERE event_id=?',(eid,))[0]
+            if rec['status']=='contained':
+                return self.result(eid+' уже локализован.','warning')
+            self.db.execute("UPDATE security_events SET status='contained' WHERE event_id=?",(eid,))
+            self.tick()
+            self.log('success',f"Сигнал {eid} ({rec['technique']}) локализован в виртуальной инфраструктуре.")
+            return self.result(f'{eid}: сигнал локализован учебной защитной процедурой. Проверь status в logs security.','success')
         if low.startswith('sessions revoke '):
             sid=raw.split()[-1].upper()
             rec=self.rows('SELECT * FROM sessions WHERE id=?',(sid,))
@@ -404,7 +448,7 @@ clear                        очистить терминал''')
 Материалы: {', '.join(sorted(self.pins)) or 'нет'}\nЗаметок аналитика: {len(self.notes)}
 Ограничение доступа: {'выполнено' if obj['contained'] else 'не завершено'}
 Восстановление: {'проверено' if obj['recovered'] else 'не подтверждено'}
-Задачи: {sum(g['done'] for g in self.goals())}/5
+Задачи: {sum(g['done'] for g in self.goals())}/{len(self.goals())}
 Оценка: {obj['score']}/100
 Время симуляции: {obj['duration_minutes']} мин.
 Статус: {'ЗАКРЫТО' if self.closed else 'В РАБОТЕ'}''')
@@ -453,7 +497,7 @@ class Handler(BaseHTTPRequestHandler):
         try: data=json.loads(self.rfile.read(n).decode()) if n else {}
         except Exception: return self._json({'error':'Некорректный JSON'},400)
         if path=='/api/reset':
-            SIM.reset()
+            SIM.reset(data.get('mode','all'))
             return self._json({'state':SIM.overview()})
         if path=='/api/command':
             cmd=data.get('command','')

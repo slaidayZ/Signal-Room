@@ -9,6 +9,18 @@
   <script src="/app.js" defer></script>
 </head>
 <body>
+  <div id="mode-overlay" class="mode-overlay" role="dialog" aria-modal="true" aria-labelledby="mode-title">
+    <div class="mode-dialog">
+      <div class="section-eyebrow"><span class="dot"></span> SIGNAL ROOM / ВЫБОР СЦЕНАРИЯ</div>
+      <h1 id="mode-title">Выбери режим учений</h1>
+      <p class="lead">В обоих режимах расследуется основной инцидент. Меняются дополнительные угрозы и их число.</p>
+      <div class="mode-options">
+        <button class="mode-option" type="button" data-mode="all"><span class="mode-tag">ПОЛНЫЙ СЦЕНАРИЙ</span><strong>Все атаки</strong><span>Все 6 типов сигналов присутствуют в журнале каждый раз.</span></button>
+        <button class="mode-option" type="button" data-mode="random"><span class="mode-tag">ПЕРЕМЕННЫЙ СЦЕНАРИЙ</span><strong>Случайный набор</strong><span>При каждом запуске выбираются случайные 3–6 типов атак.</span></button>
+      </div>
+      <p class="mode-footnote">Все атаки вымышленные и существуют только внутри локального симулятора.</p>
+    </div>
+  </div>
   <div class="shell">
     <aside class="sidebar">
       <div class="logo-area"><div class="logo-mark">S<span>R</span></div><div class="brand"><strong>SIGNAL ROOM</strong><small>SOLO INCIDENT LAB</small></div></div>
@@ -26,7 +38,7 @@
         <div class="label-mini">ОБЪЕКТ УЧЕНИЙ</div>
         <div class="org-name">ASTER / OPERATIONS</div>
         <p>Вымышленная IT-инфраструктура. Все команды безопасны и выполняются только внутри игры.</p>
-        <button id="reset" class="reset-btn">↺ Новая симуляция</button>
+        <button id="reset" class="reset-btn">↺ Новая симуляция / режим</button>
       </div>
     </aside>
 
@@ -50,7 +62,7 @@
       <div class="right-head"><span class="mini-circle"></span> ТЕКУЩАЯ ОПЕРАЦИЯ <span class="right-code">SR-042</span></div>
       <div class="right-inner">
         <div class="hero-metric-label">Выполнение задач</div>
-        <div class="objective-num"><span id="progress-num">0</span><small>/ 5</small></div>
+        <div class="objective-num"><span id="progress-num">0</span><small>/ <span id="progress-total">7</span></small></div>
         <div class="progress-track"><div id="progress-fill" class="progress-fill"></div></div>
         <div class="objectives-title">ЧЕК-ЛИСТ ИНЦИДЕНТА</div>
         <div id="objectives" class="objectives"></div>
